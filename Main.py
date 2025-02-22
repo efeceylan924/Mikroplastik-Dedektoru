@@ -1,92 +1,131 @@
 import cv2
 import numpy as np
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk
-
-# Tkinter ana pencereyi oluştur
-root = tk.Tk()
-root.title("Mikroplastik Tespiti ve Görsel İşleme")
+from tkinter import Tk, filedialog, Label, Button, Canvas, PhotoImage, simpledialog
+from PIL import Image, ImageTk, ImageEnhance
+import os
+from fpdf import FPDF
 
 
-# Yeni kod: Mikroplastik tespiti ve hafif kontrast artırımı
+def fix_text(text):
+    replacements = {
+        "ı": "i", "İ": "I", "ç": "c", "Ç": "C", "ğ": "g", "Ğ": "G",
+        "ö": "o", "Ö": "O", "ş": "s", "Ş": "S", "ü": "u", "Ü": "U"
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
-def load_and_process_microplastics():
-    file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp")])
+
+def process_image(file_path):
+    image = cv2.imread(file_path)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    pil_image = Image.fromarray(gray)
+    enhancer = ImageEnhance.Contrast(pil_image)
+    contrast_image = enhancer.enhance(1.2)
+    contrast_np = np.array(contrast_image)
+
+    edges = cv2.Canny(contrast_np, 50, 150)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    output = cv2.cvtColor(contrast_np, cv2.COLOR_GRAY2BGR)
+    microplastic_data = []
+
+    for idx, contour in enumerate(contours):
+        if len(contour) >= 5:
+            ellipse = cv2.fitEllipse(contour)
+            cv2.ellipse(output, ellipse, (255, 0, 0), 2)
+
+            (x, y), (major_axis, minor_axis), angle = ellipse
+            major_axis = int(major_axis)
+            minor_axis = int(minor_axis)
+            aspect_ratio = round(major_axis / minor_axis, 5)
+
+            cv2.putText(output, str(idx + 1), (int(x), int(y)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+
+            microplastic_data.append((idx + 1, major_axis, minor_axis, aspect_ratio))
+
+    return Image.fromarray(output), microplastic_data
+
+
+def generate_pdf(microplastic_data):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, fix_text("Mikroplastik Boyutları"), ln=True, align='C')
+    pdf.ln(10)
+
+    pdf.cell(40, 10, fix_text("Numara"), 1)
+    pdf.cell(50, 10, fix_text("En (px)"), 1)
+    pdf.cell(50, 10, fix_text("Boy (px)"), 1)
+    pdf.cell(50, 10, fix_text("En/Boy Oranı"), 1)
+    pdf.ln()
+
+    for num, width, height, aspect_ratio in microplastic_data:
+        pdf.cell(40, 10, str(num), 1)
+        pdf.cell(50, 10, str(width), 1)
+        pdf.cell(50, 10, str(height), 1)
+        pdf.cell(50, 10, f"{aspect_ratio:.5f}", 1)
+        pdf.ln()
+
+    pdf_path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF Files", "*.pdf")])
+    if pdf_path:
+        pdf.output(pdf_path, 'F')
+
+
+def open_image():
+    file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg;*.png;*.jpeg")])
     if not file_path:
         return
 
-    global microplastic_processed_image
-    image = cv2.imread(file_path)
+    processed_img, microplastic_data = process_image(file_path)
+    processed_img.thumbnail((400, 400))
 
-    # Eğer görüntü okunamazsa hata mesajı göster
-    if image is None:
-        messagebox.showerror("Hata",
-                             "Görsel yüklenemedi! Lütfen dosya yolunu ve dosyanın bozulmamış olduğunu kontrol edin.")
-        return
+    img_tk = ImageTk.PhotoImage(processed_img)
+    canvas.image = img_tk
+    canvas.create_image(0, 0, anchor='nw', image=img_tk)
 
-    process_microplastic_image(image)
-
-
-def process_microplastic_image(image):
-    global microplastic_processed_image
-
-    # Görseli gri tonlamaya çevir
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    # Kontrastı çok az artır
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    l = cv2.normalize(l, None, alpha=100, beta=180, norm_type=cv2.NORM_MINMAX)  # Hafif kontrast artırımı
-    lab = cv2.merge((l, a, b))
-    contrast_image = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-    gray = cv2.cvtColor(contrast_image, cv2.COLOR_BGR2GRAY)
-
-    # Kenar tespiti
-    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-    edges = cv2.Canny(blurred, 30, 100)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-
-    for contour in contours:
-        if len(contour) > 5:
-            ellipse = cv2.fitEllipse(contour)
-            cv2.ellipse(gray_bgr, ellipse, (0, 0, 255), 2)  # Kırmızı renk ve 2 px kalınlıkta çiz
-
-    microplastic_processed_image = gray_bgr
-    display_microplastic_image(gray_bgr)
+    global processed_image, processed_img_path, microplastic_info
+    processed_image = processed_img
+    processed_img_path = file_path
+    microplastic_info = microplastic_data
 
 
-def display_microplastic_image(image):
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image = Image.fromarray(image)
-    image_tk = ImageTk.PhotoImage(image)
-
-    microplastic_panel.config(image=image_tk)
-    microplastic_panel.image = image_tk
+def save_image():
+    if processed_image:
+        file_path = filedialog.asksaveasfilename(filetypes=[("PNG file", "*.png"), ("JPG file", "*.jpg")])
+        if file_path:
+            processed_image.save(file_path)
 
 
-def save_microplastic_image():
-    if microplastic_processed_image is None:
-        return
-    file_path = filedialog.asksaveasfilename(defaultextension=".png",
-                                             filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg"), ("JPEG", "*.jpeg")])
-    if file_path:
-        cv2.imwrite(file_path, microplastic_processed_image)
+def save_pdf():
+    if microplastic_info:
+        generate_pdf(microplastic_info)
 
 
-# Yeni butonlar ve panel ekleme
-btn_load_microplastic = tk.Button(root, text="Mikroplastik Görsel Yükle", command=load_and_process_microplastics)
-btn_load_microplastic.pack()
+root = Tk()
+root.title("Mikroplastik Tespiti")
 
-btn_save_microplastic = tk.Button(root, text="İşlenen Mikroplastik Görseli Kaydet", command=save_microplastic_image)
-btn_save_microplastic.pack()
+label = Label(root, text="Görseli yükleyin ve işlemi başlatın")
+label.pack()
 
-microplastic_panel = tk.Label(root)
-microplastic_panel.pack()
+canvas = Canvas(root, width=400, height=400)
+canvas.pack()
 
-microplastic_processed_image = None
+btn_open = Button(root, text="Görsel Yükle", command=open_image)
+btn_open.pack()
 
-# Tkinter ana döngüsünü başlat
+btn_save = Button(root, text="Görseli Kaydet", command=save_image)
+btn_save.pack()
+
+btn_save_pdf = Button(root, text="PDF Olarak Kaydet", command=save_pdf)
+btn_save_pdf.pack()
+
+processed_image = None
+processed_img_path = None
+microplastic_info = None
+
 root.mainloop()
